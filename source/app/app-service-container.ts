@@ -109,7 +109,6 @@ export class AppServiceContainer {
     this._assetsProvider = new AssetsProvider(this._logProvider)
     this._cssProvider = new CssProvider(this._logProvider)
     this._statsProvider = new StatsProvider(this._logProvider)
-    this._claudeProvider = new ClaudeProvider(this._logProvider)
 
     this._appearanceProvider = new AppearanceProvider(this._logProvider, this._configProvider)
     this._dictionaryProvider = new DictionaryProvider(this._logProvider, this._configProvider)
@@ -119,6 +118,8 @@ export class AppServiceContainer {
     
     // The document provider accesses only the FSAL in its constructor
     this._documentManager = new DocumentManager(this)
+    // ClaudeProvider depends on DocumentManager for active document tracking
+    this._claudeProvider = new ClaudeProvider(this._logProvider, this._documentManager)
     this._tagProvider = new TagProvider(this._logProvider, this._documentManager, this._configProvider, this._fsal)
     this._windowProvider = new WindowProvider(this._logProvider, this._configProvider, this._documentManager)
 
