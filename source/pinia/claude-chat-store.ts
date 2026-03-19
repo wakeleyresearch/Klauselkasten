@@ -24,12 +24,29 @@ export interface ClaudeMessage {
   timestamp: number
 }
 
+export type ClaudePermissionMode = 'default' | 'plan' | 'auto' | 'acceptEdits'
+
+export interface ClaudeSettings {
+  permissionMode: ClaudePermissionMode
+  model: string
+  allowedTools: string[]
+  disallowedTools: string[]
+  additionalDirs: string[]
+}
+
 export const useClaudeChatStore = defineStore('claude-chat', () => {
   const messages = ref<ClaudeMessage[]>([])
   const isStreaming = ref(false)
   const includeDocument = ref(false)
   const currentSessionId = ref<string | null>(null)
   const currentDocPath = ref<string | null>(null)
+  const settings = ref<ClaudeSettings>({
+    permissionMode: 'plan',
+    model: '',
+    allowedTools: [],
+    disallowedTools: [],
+    additionalDirs: []
+  })
 
   /**
    * Sends a user message to Claude via IPC and begins streaming.
@@ -146,6 +163,43 @@ export const useClaudeChatStore = defineStore('claude-chat', () => {
       .catch(err => console.error(err))
   }
 
+  /**
+   * Loads settings from the backend and updates the local state.
+   */
+  function loadSettings (): void {
+    ipcRenderer.invoke('claude-provider', {
+      command: 'get-settings',
+      payload: {}
+    })
+      .then((result: ClaudeSettings) => {
+        if (result != null) {
+          settings.value = result
+        }
+      })
+      .catch(err => console.error(err))
+  }
+
+  /**
+   * Sends a partial settings update to the backend and syncs the local state.
+   *
+   * @param   {Partial<ClaudeSettings>}  partial  The settings fields to update
+   */
+  function updateSettings (partial: Partial<ClaudeSettings>): void {
+    ipcRenderer.invoke('claude-provider', {
+      command: 'update-settings',
+      payload: partial
+    })
+      .then((result: ClaudeSettings) => {
+        if (result != null) {
+          settings.value = result
+        }
+      })
+      .catch(err => console.error(err))
+  }
+
+  // Load settings on store initialization
+  loadSettings()
+
   // Listen to streamed chunks from the backend
   ipcRenderer.on('claude-chat', (event, command: string, payload: any) => {
     if (command === 'chunk') {
@@ -167,12 +221,15 @@ export const useClaudeChatStore = defineStore('claude-chat', () => {
     includeDocument,
     currentSessionId,
     currentDocPath,
+    settings,
     sendMessage,
     appendChunk,
     finalizeMessage,
     clearMessages,
     loadHistory,
     setMessages,
-    stopGeneration
+    stopGeneration,
+    loadSettings,
+    updateSettings
   }
 })

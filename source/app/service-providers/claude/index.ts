@@ -20,19 +20,27 @@ import broadcastIpcMessage from '@common/util/broadcast-ipc-message'
 import ProviderContract from '../provider-contract'
 import type LogProvider from '../log'
 import ConversationStore from './conversation-store'
-import type { ClaudeMessage } from './types'
+import type { ClaudeMessage, ClaudeSettings } from './types'
 
 export default class ClaudeProvider extends ProviderContract {
   private _process: ChildProcess | undefined
   private _sessionId: string | undefined
   private readonly _store: ConversationStore
   private _currentDocPath: string | undefined
+  private _settings: ClaudeSettings
 
   constructor (private readonly _logger: LogProvider) {
     super()
     this._process = undefined
     this._sessionId = undefined
     this._store = new ConversationStore()
+    this._settings = {
+      permissionMode: 'plan',
+      model: '',
+      allowedTools: [],
+      disallowedTools: [],
+      additionalDirs: []
+    }
 
     ipcMain.handle('claude-provider', async (event, message) => {
       const { command, payload } = message
@@ -67,6 +75,27 @@ export default class ClaudeProvider extends ProviderContract {
           })
         }
         return conversation?.messages ?? []
+      } else if (command === 'get-settings') {
+        return { ...this._settings }
+      } else if (command === 'update-settings') {
+        const partial = payload as Partial<ClaudeSettings>
+        if (partial.permissionMode != null) {
+          this._settings.permissionMode = partial.permissionMode
+        }
+        if (partial.model != null) {
+          this._settings.model = partial.model
+        }
+        if (partial.allowedTools != null) {
+          this._settings.allowedTools = partial.allowedTools
+        }
+        if (partial.disallowedTools != null) {
+          this._settings.disallowedTools = partial.disallowedTools
+        }
+        if (partial.additionalDirs != null) {
+          this._settings.additionalDirs = partial.additionalDirs
+        }
+        this._logger.info(`[Claude Provider] Settings updated: ${JSON.stringify(this._settings)}`)
+        return { ...this._settings }
       }
     })
   }
@@ -112,6 +141,27 @@ export default class ClaudeProvider extends ProviderContract {
 
     if (this._sessionId != null) {
       args.push('--resume', this._sessionId)
+    }
+
+    // Apply settings to CLI arguments
+    if (this._settings.permissionMode.length > 0) {
+      args.push('--permission-mode', this._settings.permissionMode)
+    }
+
+    if (this._settings.model.length > 0) {
+      args.push('--model', this._settings.model)
+    }
+
+    if (this._settings.allowedTools.length > 0) {
+      args.push('--allowedTools', ...this._settings.allowedTools)
+    }
+
+    if (this._settings.disallowedTools.length > 0) {
+      args.push('--disallowed-tools', ...this._settings.disallowedTools)
+    }
+
+    if (this._settings.additionalDirs.length > 0) {
+      args.push('--add-dir', ...this._settings.additionalDirs)
     }
 
     args.push(

@@ -2,7 +2,17 @@
   <div role="tabpanel" class="claude-chat-tab">
     <!-- Header controls -->
     <div class="claude-chat-header">
-      <h1>Claude</h1>
+      <div class="claude-chat-title-row">
+        <h1>Claude</h1>
+        <button
+          class="claude-chat-btn claude-chat-btn-gear"
+          v-bind:class="{ active: showSettings }"
+          v-on:click="toggleSettings"
+          v-bind:title="settingsLabel"
+        >
+          &#9881;
+        </button>
+      </div>
       <div class="claude-chat-controls">
         <label class="claude-chat-toggle">
           <input
@@ -24,6 +34,28 @@
         >
           {{ clearLabel }}
         </button>
+      </div>
+
+      <!-- Inline settings panel -->
+      <div v-if="showSettings" class="claude-chat-settings">
+        <div class="claude-chat-setting-row">
+          <label>{{ permissionModeLabel }}</label>
+          <select v-model="selectedPermissionMode" v-on:change="onSettingsChange">
+            <option value="default">Default</option>
+            <option value="plan">Plan</option>
+            <option value="auto">Auto</option>
+            <option value="acceptEdits">Accept Edits</option>
+          </select>
+        </div>
+        <div class="claude-chat-setting-row">
+          <label>{{ modelLabel }}</label>
+          <select v-model="selectedModel" v-on:change="onSettingsChange">
+            <option value="">Default</option>
+            <option value="opus">Opus</option>
+            <option value="sonnet">Sonnet</option>
+            <option value="haiku">Haiku</option>
+          </select>
+        </div>
       </div>
     </div>
 
@@ -92,6 +124,7 @@ const claudeChatStore = useClaudeChatStore()
 const inputText = ref('')
 const messageContainer = ref<HTMLDivElement | null>(null)
 const inputArea = ref<HTMLTextAreaElement | null>(null)
+const showSettings = ref(false)
 
 const includeDocumentLabel = trans('Include document')
 const clearLabel = trans('Clear')
@@ -100,9 +133,26 @@ const userLabel = trans('User')
 const assistantLabel = trans('Claude')
 const emptyMessage = trans('Ask Claude anything about your writing.')
 const placeholderText = trans('Type a message... (Enter to send, Shift+Enter for newline)')
+const settingsLabel = trans('Settings')
+const permissionModeLabel = trans('Permission mode')
+const modelLabel = trans('Model')
 
 const messages = computed(() => claudeChatStore.messages)
 const isStreaming = computed(() => claudeChatStore.isStreaming)
+
+const selectedPermissionMode = computed({
+  get: () => claudeChatStore.settings.permissionMode,
+  set: (value: string) => {
+    claudeChatStore.updateSettings({ permissionMode: value as any })
+  }
+})
+
+const selectedModel = computed({
+  get: () => claudeChatStore.settings.model,
+  set: (value: string) => {
+    claudeChatStore.updateSettings({ model: value })
+  }
+})
 
 const includeDocument = computed({
   get: () => claudeChatStore.includeDocument,
@@ -173,6 +223,22 @@ function stopStreaming (): void {
 function clearConversation (): void {
   claudeChatStore.clearMessages()
 }
+
+/**
+ * Toggles the visibility of the inline settings panel.
+ */
+function toggleSettings (): void {
+  showSettings.value = !showSettings.value
+}
+
+/**
+ * Called when a settings dropdown value changes. The computed setters
+ * handle the actual update, so this is a no-op placeholder for the
+ * v-on:change binding.
+ */
+function onSettingsChange (): void {
+  // Updates are handled by computed setters
+}
 </script>
 
 <style lang="less">
@@ -188,9 +254,63 @@ function clearConversation (): void {
     border-bottom: 1px solid rgba(0, 0, 0, 0.1);
     margin-bottom: 5px;
 
+    .claude-chat-title-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
     h1 {
       font-size: 16px;
       margin: 10px 0 5px 0;
+    }
+
+    .claude-chat-btn-gear {
+      font-size: 16px;
+      padding: 2px 6px;
+      border: none;
+      background: transparent;
+      cursor: pointer;
+      color: inherit;
+      opacity: 0.5;
+      line-height: 1;
+
+      &:hover { opacity: 0.8; }
+      &.active { opacity: 1; }
+    }
+
+    .claude-chat-settings {
+      margin-top: 6px;
+      padding: 8px;
+      border: 1px solid rgba(0, 0, 0, 0.1);
+      border-radius: 4px;
+      background-color: rgba(0, 0, 0, 0.02);
+
+      .claude-chat-setting-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 6px;
+        font-size: 12px;
+
+        &:last-child { margin-bottom: 0; }
+
+        label {
+          flex-shrink: 0;
+          margin-right: 8px;
+        }
+
+        select {
+          flex-grow: 1;
+          max-width: 140px;
+          font-size: 12px;
+          padding: 2px 4px;
+          border: 1px solid rgba(0, 0, 0, 0.2);
+          border-radius: 3px;
+          background-color: transparent;
+          color: inherit;
+        }
+      }
     }
 
     .claude-chat-controls {
@@ -329,6 +449,15 @@ body.dark {
   .claude-chat-tab {
     .claude-chat-header {
       border-bottom-color: rgba(255, 255, 255, 0.1);
+
+      .claude-chat-settings {
+        border-color: rgba(255, 255, 255, 0.1);
+        background-color: rgba(255, 255, 255, 0.04);
+
+        .claude-chat-setting-row select {
+          border-color: rgba(255, 255, 255, 0.2);
+        }
+      }
 
       .claude-chat-controls {
         .claude-chat-btn {
