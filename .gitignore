@@ -56,3 +56,6 @@ eslint_report.htm
 
 ### Idea ###
 .idea/*
+
+# Claude Code project config
+CLAUDE.md

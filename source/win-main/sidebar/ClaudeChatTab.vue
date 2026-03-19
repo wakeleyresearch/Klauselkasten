@@ -71,6 +71,13 @@
             {{ stopLabel }}
           </button>
           <button
+            v-if="canUndo"
+            class="claude-chat-btn claude-chat-btn-undo"
+            v-on:click="handleUndo"
+          >
+            Undo Write
+          </button>
+          <button
             class="claude-chat-btn"
             v-on:click="clearConversation"
           >
@@ -213,6 +220,7 @@ const isStreaming = computed(() => claudeChatStore.isStreaming)
 const authStatus = computed(() => claudeChatStore.authStatus)
 const loginInProgress = computed(() => authStatus.value?.loginInProgress === true)
 const currentDocTitle = computed(() => claudeChatStore.currentDocTitle)
+const canUndo = computed(() => claudeChatStore.canUndo)
 
 const selectedPermissionMode = computed({
   get: () => claudeChatStore.settings.permissionMode,
@@ -303,6 +311,13 @@ function stopStreaming (): void {
  */
 function clearConversation (): void {
   claudeChatStore.clearMessages()
+}
+
+/**
+ * Reverts the last Claude write operation on the active document.
+ */
+function handleUndo (): void {
+  claudeChatStore.undoWrite()
 }
 
 /**

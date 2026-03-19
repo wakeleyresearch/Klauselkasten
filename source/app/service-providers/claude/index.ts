@@ -19,6 +19,7 @@
 
 import path from 'path'
 import { spawn, type ChildProcess } from 'child_process'
+import { promises as fs } from 'fs'
 import { ipcMain } from 'electron'
 import broadcastIpcMessage from '@common/util/broadcast-ipc-message'
 import ProviderContract from '../provider-contract'
@@ -36,6 +37,7 @@ export default class ClaudeProvider extends ProviderContract {
   private readonly _store: ConversationStore
   private _currentDocPath: string | undefined
   private _activeDocPath: string | undefined
+  private _lastSnapshot: { filePath: string, content: string } | undefined
   private _authStatus: AuthStatus = { loggedIn: false }
   private _settings: ClaudeSettings
 
@@ -76,6 +78,20 @@ export default class ClaudeProvider extends ProviderContract {
           await this._store.clear(this._currentDocPath)
         }
         this._sessionId = undefined
+      } else if (command === 'undo-write') {
+        // Restore the last snapshot of the active document
+        if (this._lastSnapshot != null) {
+          try {
+            await fs.writeFile(this._lastSnapshot.filePath, this._lastSnapshot.content, 'utf-8')
+            this._logger.info(`[Claude Provider] Undo: restored ${this._lastSnapshot.filePath}`)
+            broadcastIpcMessage('claude-chat', 'undo-complete', { success: true, filePath: this._lastSnapshot.filePath })
+            this._lastSnapshot = undefined
+          } catch (err: unknown) {
+            const msg = err instanceof Error ? err.message : 'Unknown error'
+            this._logger.error(`[Claude Provider] Undo failed: ${msg}`, err)
+            broadcastIpcMessage('claude-chat', 'undo-complete', { success: false, error: msg })
+          }
+        }
       } else if (command === 'insert-text') {
         const { text } = payload as { text: string }
         if (typeof text === 'string' && text.length > 0) {
@@ -127,6 +143,10 @@ export default class ClaudeProvider extends ProviderContract {
           this._settings.permissionMode = partial.permissionMode
         }
         if (partial.model != null) {
+          // Reset session when model changes — old session is incompatible
+          if (partial.model !== this._settings.model) {
+            this._sessionId = undefined
+          }
           this._settings.model = partial.model
         }
         if (partial.allowedTools != null) {
@@ -349,6 +369,16 @@ export default class ClaudeProvider extends ProviderContract {
       return
     }
 
+    // Snapshot the active document before Claude potentially modifies it
+    if (this._activeDocPath != null) {
+      try {
+        const content = await fs.readFile(this._activeDocPath, 'utf-8')
+        this._lastSnapshot = { filePath: this._activeDocPath, content }
+      } catch {
+        // File might not exist yet — that's fine
+      }
+    }
+
     // If no explicit document content was provided but we have an active
     // document, automatically read its content and include it.
     if ((documentContent == null || documentContent.length === 0) && this._activeDocPath != null) {
@@ -404,17 +434,29 @@ export default class ClaudeProvider extends ProviderContract {
       args.push('--add-dir', ...this._settings.additionalDirs)
     }
 
+    // Always grant file access to the active document's directory
+    if (this._activeDocPath != null) {
+      const docDir = path.dirname(this._activeDocPath)
+      args.push('--add-dir', docDir)
+    }
+
+    // Grant write permissions by default so Claude can modify documents
+    args.push('--allowedTools', 'Edit', 'Write', 'Read', 'Bash(cat:*)', 'Bash(ls:*)')
+
     args.push(
       '--append-system-prompt',
-      'You are assisting a user in Zettlr, a markdown editor for academic writing and Zettelkasten note-taking.'
+      `You are assisting a user in Zettlr, a markdown editor for academic writing and Zettelkasten note-taking.${this._activeDocPath != null ? ` The user is currently editing: ${this._activeDocPath}` : ''}`
     )
 
     this._logger.info(`[Claude Provider] Spawning Claude CLI subprocess with args: ${JSON.stringify(args.map(a => a.length > 50 ? a.substring(0, 50) + '...' : a))}`)
 
     try {
+      // Set CWD to the active document's directory so Claude can access it directly
+      const cwd = this._activeDocPath != null ? path.dirname(this._activeDocPath) : (process.env.HOME ?? '/tmp')
+
       this._process = spawn('/home/s/.local/bin/claude', args, {
         stdio: ['ignore', 'pipe', 'pipe'],
-        cwd: process.env.HOME ?? '/tmp',
+        cwd,
         env: { ...process.env }
       })
     } catch (err: unknown) {
@@ -534,8 +576,23 @@ export default class ClaudeProvider extends ProviderContract {
         }
       }
 
+      // Notify Zettlr that the active document may have been modified on disk
+      // so the editor reloads the file content
+      if (this._activeDocPath != null) {
+        broadcastIpcMessage('documents-update', {
+          event: DP_EVENTS.FILE_REMOTELY_CHANGED,
+          context: { filePath: this._activeDocPath }
+        })
+      }
+
+      // If process failed and we got no content, the session may be stale
+      if (code !== 0 && assistantContent.length === 0 && this._sessionId != null) {
+        this._logger.info('[Claude Provider] Session may be stale, clearing for next attempt')
+        this._sessionId = undefined
+      }
+
       broadcastIpcMessage('claude-chat', 'end', {
-        error: code !== 0 ? `Process exited with code ${String(code)}` : null,
+        error: code !== 0 ? `Process exited with code ${String(code)}. Try sending your message again.` : null,
         sessionId: this._sessionId
       })
       this._process = undefined

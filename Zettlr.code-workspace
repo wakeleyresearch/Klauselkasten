@@ -1,0 +1,16 @@
+{
+	"folders": [
+		{
+			"path": "."
+		}
+	],
+	"settings": {
+		"files.associations": {
+			".ztr-directory": "json"
+		},
+		"yaml.schemas": {
+			"static/defaults/pandoc-defaults-schema.json": "static/defaults/*.yaml"
+		},
+		"claudeCode.allowDangerouslySkipPermissions": true
+	}
+}

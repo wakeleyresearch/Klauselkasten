@@ -277,6 +277,19 @@ export const useClaudeChatStore = defineStore('claude-chat', () => {
       .catch(err => console.error(err))
   }
 
+  const canUndo = ref(false)
+
+  /**
+   * Reverts the last Claude write operation on the active document.
+   */
+  function undoWrite (): void {
+    ipcRenderer.invoke('claude-provider', {
+      command: 'undo-write',
+      payload: {}
+    })
+      .catch(err => console.error(err))
+  }
+
   // Load settings on store initialization
   loadSettings()
 
@@ -286,6 +299,7 @@ export const useClaudeChatStore = defineStore('claude-chat', () => {
       appendChunk(payload as string)
     } else if (command === 'end') {
       finalizeMessage(payload?.sessionId as string | undefined)
+      canUndo.value = true
     } else if (command === 'history-loaded') {
       const { messages: loadedMessages, sessionId } = payload as {
         messages: ClaudeMessage[]
@@ -294,6 +308,8 @@ export const useClaudeChatStore = defineStore('claude-chat', () => {
       setMessages(loadedMessages, sessionId)
     } else if (command === 'auth-status') {
       authStatus.value = payload as AuthStatus
+    } else if (command === 'undo-complete') {
+      canUndo.value = false
     } else if (command === 'active-doc-changed') {
       const { path: docPath } = payload as { path: string, title: string }
       currentDocPath.value = docPath
@@ -321,6 +337,8 @@ export const useClaudeChatStore = defineStore('claude-chat', () => {
     login,
     loadSettings,
     updateSettings,
-    insertIntoDocument
+    insertIntoDocument,
+    canUndo,
+    undoWrite
   }
 })
