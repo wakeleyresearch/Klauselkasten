@@ -50,3 +50,13 @@ export interface ClaudeConversationFile {
   messages: ClaudeMessage[]
   lastAccessed: number
 }
+
+export type ClaudePermissionMode = 'default' | 'plan' | 'auto' | 'acceptEdits'
+
+export interface ClaudeSettings {
+  permissionMode: ClaudePermissionMode
+  model: string  // 'opus' | 'sonnet' | 'haiku' or empty for default
+  allowedTools: string[]
+  disallowedTools: string[]
+  additionalDirs: string[]
+}

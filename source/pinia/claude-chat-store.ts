@@ -14,7 +14,7 @@
  */
 
 import { defineStore } from 'pinia'
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
 
 const ipcRenderer = window.ipc
 
@@ -24,12 +24,52 @@ export interface ClaudeMessage {
   timestamp: number
 }
 
+export interface AuthStatus {
+  loggedIn: boolean
+  email?: string
+  orgName?: string
+  subscriptionType?: string
+  authMethod?: string
+  loginInProgress?: boolean
+}
+
+export type ClaudePermissionMode = 'default' | 'plan' | 'auto' | 'acceptEdits'
+
+export interface ClaudeSettings {
+  permissionMode: ClaudePermissionMode
+  model: string
+  allowedTools: string[]
+  disallowedTools: string[]
+  additionalDirs: string[]
+}
+
 export const useClaudeChatStore = defineStore('claude-chat', () => {
   const messages = ref<ClaudeMessage[]>([])
   const isStreaming = ref(false)
   const includeDocument = ref(false)
   const currentSessionId = ref<string | null>(null)
   const currentDocPath = ref<string | null>(null)
+  const authStatus = ref<AuthStatus | null>(null)
+  const settings = ref<ClaudeSettings>({
+    permissionMode: 'plan',
+    model: '',
+    allowedTools: [],
+    disallowedTools: [],
+    additionalDirs: []
+  })
+
+  /**
+   * Computed display name for the current document, extracted from its path.
+   * Returns null when no document is associated with the conversation.
+   */
+  const currentDocTitle = computed<string | null>(() => {
+    if (currentDocPath.value == null) {
+      return null
+    }
+
+    const parts = currentDocPath.value.split('/')
+    return parts[parts.length - 1] ?? null
+  })
 
   /**
    * Sends a user message to Claude via IPC and begins streaming.
@@ -146,7 +186,101 @@ export const useClaudeChatStore = defineStore('claude-chat', () => {
       .catch(err => console.error(err))
   }
 
-  // Listen to streamed chunks from the backend
+  /**
+   * Explicitly saves the current conversation history to disk.
+   */
+  function saveCurrentHistory (): void {
+    if (currentDocPath.value == null || messages.value.length === 0) {
+      return
+    }
+
+    ipcRenderer.invoke('claude-provider', {
+      command: 'save-history',
+      payload: {
+        docPath: currentDocPath.value,
+        messages: messages.value,
+        sessionId: currentSessionId.value
+      }
+    })
+      .catch(err => console.error(err))
+  }
+
+  /**
+   * Requests the backend to check the current Claude authentication status.
+   * The result will arrive asynchronously via the 'auth-status' IPC event.
+   */
+  function checkAuth (): void {
+    ipcRenderer.invoke('claude-provider', {
+      command: 'check-auth',
+      payload: {}
+    })
+      .catch(err => console.error(err))
+  }
+
+  /**
+   * Launches the interactive Claude login flow via the backend.
+   * The result will arrive asynchronously via the 'auth-status' IPC event.
+   */
+  function login (): void {
+    ipcRenderer.invoke('claude-provider', {
+      command: 'login',
+      payload: {}
+    })
+      .catch(err => console.error(err))
+  }
+
+  /**
+   * Loads settings from the backend and updates the local state.
+   */
+  function loadSettings (): void {
+    ipcRenderer.invoke('claude-provider', {
+      command: 'get-settings',
+      payload: {}
+    })
+      .then((result: ClaudeSettings) => {
+        if (result != null) {
+          settings.value = result
+        }
+      })
+      .catch(err => console.error(err))
+  }
+
+  /**
+   * Sends a partial settings update to the backend and syncs the local state.
+   *
+   * @param   {Partial<ClaudeSettings>}  partial  The settings fields to update
+   */
+  function updateSettings (partial: Partial<ClaudeSettings>): void {
+    ipcRenderer.invoke('claude-provider', {
+      command: 'update-settings',
+      payload: partial
+    })
+      .then((result: ClaudeSettings) => {
+        if (result != null) {
+          settings.value = result
+        }
+      })
+      .catch(err => console.error(err))
+  }
+
+  /**
+   * Inserts the given text into the active document at the cursor position
+   * by routing through the Claude provider IPC channel.
+   *
+   * @param   {string}  text  The text to insert into the editor
+   */
+  function insertIntoDocument (text: string): void {
+    ipcRenderer.invoke('claude-provider', {
+      command: 'insert-text',
+      payload: { text }
+    })
+      .catch(err => console.error(err))
+  }
+
+  // Load settings on store initialization
+  loadSettings()
+
+  // Listen to streamed chunks and other events from the backend
   ipcRenderer.on('claude-chat', (event, command: string, payload: any) => {
     if (command === 'chunk') {
       appendChunk(payload as string)
@@ -158,6 +292,11 @@ export const useClaudeChatStore = defineStore('claude-chat', () => {
         sessionId?: string
       }
       setMessages(loadedMessages, sessionId)
+    } else if (command === 'auth-status') {
+      authStatus.value = payload as AuthStatus
+    } else if (command === 'active-doc-changed') {
+      const { path: docPath } = payload as { path: string, title: string }
+      currentDocPath.value = docPath
     }
   })
 
@@ -167,12 +306,21 @@ export const useClaudeChatStore = defineStore('claude-chat', () => {
     includeDocument,
     currentSessionId,
     currentDocPath,
+    currentDocTitle,
+    authStatus,
+    settings,
     sendMessage,
     appendChunk,
     finalizeMessage,
     clearMessages,
     loadHistory,
     setMessages,
-    stopGeneration
+    saveCurrentHistory,
+    stopGeneration,
+    checkAuth,
+    login,
+    loadSettings,
+    updateSettings,
+    insertIntoDocument
   }
 })

@@ -713,6 +713,14 @@ onMounted(() => {
     }
   })
 
+  // Listen for Claude insert-text commands
+  ipcRenderer.on('claude-chat', (event, command: string, payload: any) => {
+    if (command === 'insert-text' && payload != null && typeof payload.text === 'string') {
+      editorCommands.value.data = payload.text as string
+      editorCommands.value.replaceSelection = !editorCommands.value.replaceSelection
+    }
+  })
+
   // Initially, we need to hide the sidebar, since the view will be visible
   // by default.
   if (!sidebarVisible.value) {

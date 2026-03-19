@@ -27,6 +27,8 @@ import type DocumentManager from '../documents'
 import type { DocumentsUpdateContext } from '../documents'
 import { DP_EVENTS } from '@dts/common/documents'
 import ConversationStore from './conversation-store'
+import type { ClaudeMessage, ClaudeSettings } from './types'
+import { checkAuthStatus, type AuthStatus } from './auth'
 
 export default class ClaudeProvider extends ProviderContract {
   private _process: ChildProcess | undefined
@@ -34,6 +36,8 @@ export default class ClaudeProvider extends ProviderContract {
   private readonly _store: ConversationStore
   private _currentDocPath: string | undefined
   private _activeDocPath: string | undefined
+  private _authStatus: AuthStatus = { loggedIn: false }
+  private _settings: ClaudeSettings
 
   constructor (
     private readonly _logger: LogProvider,
@@ -43,6 +47,13 @@ export default class ClaudeProvider extends ProviderContract {
     this._process = undefined
     this._sessionId = undefined
     this._store = new ConversationStore()
+    this._settings = {
+      permissionMode: 'plan',
+      model: '',
+      allowedTools: [],
+      disallowedTools: [],
+      additionalDirs: []
+    }
 
     ipcMain.handle('claude-provider', async (event, message) => {
       const { command, payload } = message
@@ -65,6 +76,20 @@ export default class ClaudeProvider extends ProviderContract {
           await this._store.clear(this._currentDocPath)
         }
         this._sessionId = undefined
+      } else if (command === 'insert-text') {
+        const { text } = payload as { text: string }
+        if (typeof text === 'string' && text.length > 0) {
+          broadcastIpcMessage('claude-chat', 'insert-text', { text })
+        }
+      } else if (command === 'save-history') {
+        const { docPath, messages, sessionId } = payload as {
+          docPath: string
+          messages: ClaudeMessage[]
+          sessionId?: string | null
+        }
+        if (docPath != null && messages != null) {
+          await this._store.save(docPath, messages, sessionId ?? null)
+        }
       } else if (command === 'load-history') {
         const { docPath } = payload as { docPath: string }
         this._currentDocPath = docPath
@@ -75,16 +100,63 @@ export default class ClaudeProvider extends ProviderContract {
             messages: conversation.messages,
             sessionId: conversation.sessionId
           })
+        } else {
+          // No conversation found -- broadcast empty history so the renderer
+          // clears any stale messages from the previous document.
+          this._sessionId = undefined
+          broadcastIpcMessage('claude-chat', 'history-loaded', {
+            messages: [],
+            sessionId: undefined
+          })
         }
         return conversation?.messages ?? []
       } else if (command === 'get-active-doc-info') {
         return this._getActiveDocInfo()
+      } else if (command === 'check-auth') {
+        const status = await checkAuthStatus()
+        this._authStatus = status
+        broadcastIpcMessage('claude-chat', 'auth-status', status)
+        return status
+      } else if (command === 'login') {
+        await this._launchLogin()
+      } else if (command === 'get-settings') {
+        return { ...this._settings }
+      } else if (command === 'update-settings') {
+        const partial = payload as Partial<ClaudeSettings>
+        if (partial.permissionMode != null) {
+          this._settings.permissionMode = partial.permissionMode
+        }
+        if (partial.model != null) {
+          this._settings.model = partial.model
+        }
+        if (partial.allowedTools != null) {
+          this._settings.allowedTools = partial.allowedTools
+        }
+        if (partial.disallowedTools != null) {
+          this._settings.disallowedTools = partial.disallowedTools
+        }
+        if (partial.additionalDirs != null) {
+          this._settings.additionalDirs = partial.additionalDirs
+        }
+        this._logger.info(`[Claude Provider] Settings updated: ${JSON.stringify(this._settings)}`)
+        return { ...this._settings }
       }
     })
   }
 
   async boot (): Promise<void> {
     this._logger.verbose('Claude provider booting up ...')
+
+    // Check auth status on startup and broadcast to renderer
+    try {
+      this._authStatus = await checkAuthStatus()
+      this._logger.info(`[Claude Provider] Auth status: loggedIn=${String(this._authStatus.loggedIn)}, email=${this._authStatus.email ?? 'N/A'}`)
+      broadcastIpcMessage('claude-chat', 'auth-status', this._authStatus)
+    } catch (err: unknown) {
+      this._logger.error('[Claude Provider] Failed to check auth status on boot', err)
+      this._authStatus = { loggedIn: false }
+      broadcastIpcMessage('claude-chat', 'auth-status', this._authStatus)
+    }
 
     // Listen for active file changes from the DocumentManager so we can
     // automatically track which document the user is working on and load
@@ -116,7 +188,7 @@ export default class ClaudeProvider extends ProviderContract {
               sessionId: conversation.sessionId
             })
           } else {
-            // No conversation yet — clear the chat in the renderer
+            // No conversation yet -- clear the chat in the renderer
             this._sessionId = undefined
             broadcastIpcMessage('claude-chat', 'history-loaded', {
               messages: [],
@@ -139,6 +211,63 @@ export default class ClaudeProvider extends ProviderContract {
   async shutdown (): Promise<void> {
     this._logger.verbose('Claude provider shutting down ...')
     this.stop()
+  }
+
+  /**
+   * Launches an interactive login flow by opening a terminal emulator with
+   * `claude auth login`. After the terminal closes, re-checks auth status
+   * and broadcasts the result.
+   */
+  private async _launchLogin (): Promise<void> {
+    this._logger.info('[Claude Provider] Launching Claude auth login in terminal')
+    broadcastIpcMessage('claude-chat', 'auth-status', { ...this._authStatus, loginInProgress: true })
+
+    return await new Promise<void>((resolve) => {
+      let loginProc
+      try {
+        loginProc = spawn('x-terminal-emulator', ['-e', '/home/s/.local/bin/claude', 'auth', 'login'], {
+          stdio: 'ignore',
+          cwd: process.env.HOME ?? '/tmp',
+          env: { ...process.env },
+          detached: true
+        })
+      } catch {
+        // Fallback to gnome-terminal
+        try {
+          loginProc = spawn('gnome-terminal', ['--', '/home/s/.local/bin/claude', 'auth', 'login'], {
+            stdio: 'ignore',
+            cwd: process.env.HOME ?? '/tmp',
+            env: { ...process.env },
+            detached: true
+          })
+        } catch (err: unknown) {
+          const message = err instanceof Error ? err.message : 'Unknown error'
+          this._logger.error(`[Claude Provider] Failed to launch login terminal: ${message}`, err)
+          broadcastIpcMessage('claude-chat', 'auth-status', { ...this._authStatus, loginInProgress: false })
+          resolve()
+          return
+        }
+      }
+
+      loginProc.on('error', (err: Error) => {
+        this._logger.error(`[Claude Provider] Login terminal error: ${err.message}`, err)
+        broadcastIpcMessage('claude-chat', 'auth-status', { ...this._authStatus, loginInProgress: false })
+        resolve()
+      })
+
+      loginProc.on('close', () => {
+        this._logger.info('[Claude Provider] Login terminal closed, re-checking auth status')
+        checkAuthStatus()
+          .then(status => {
+            this._authStatus = status
+            broadcastIpcMessage('claude-chat', 'auth-status', status)
+          })
+          .catch(() => {
+            broadcastIpcMessage('claude-chat', 'auth-status', { loggedIn: false })
+          })
+          .finally(() => { resolve() })
+      })
+    })
   }
 
   /**
@@ -210,6 +339,16 @@ export default class ClaudeProvider extends ProviderContract {
    * @param   {string}  selectionText    Optional selected text
    */
   async sendMessage (userMessage: string, documentContent?: string, selectionText?: string): Promise<void> {
+    // Gate: require authentication before sending messages
+    if (!this._authStatus.loggedIn) {
+      this._logger.warning('[Claude Provider] Cannot send message: not authenticated')
+      broadcastIpcMessage('claude-chat', 'end', {
+        error: 'Not authenticated. Please sign in to Claude first.',
+        sessionId: this._sessionId
+      })
+      return
+    }
+
     // If no explicit document content was provided but we have an active
     // document, automatically read its content and include it.
     if ((documentContent == null || documentContent.length === 0) && this._activeDocPath != null) {
@@ -242,6 +381,27 @@ export default class ClaudeProvider extends ProviderContract {
 
     if (this._sessionId != null) {
       args.push('--resume', this._sessionId)
+    }
+
+    // Apply settings to CLI arguments
+    if (this._settings.permissionMode.length > 0) {
+      args.push('--permission-mode', this._settings.permissionMode)
+    }
+
+    if (this._settings.model.length > 0) {
+      args.push('--model', this._settings.model)
+    }
+
+    if (this._settings.allowedTools.length > 0) {
+      args.push('--allowedTools', ...this._settings.allowedTools)
+    }
+
+    if (this._settings.disallowedTools.length > 0) {
+      args.push('--disallowed-tools', ...this._settings.disallowedTools)
+    }
+
+    if (this._settings.additionalDirs.length > 0) {
+      args.push('--add-dir', ...this._settings.additionalDirs)
     }
 
     args.push(
