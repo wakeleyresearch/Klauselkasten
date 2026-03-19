@@ -24,12 +24,22 @@ export interface ClaudeMessage {
   timestamp: number
 }
 
+export interface AuthStatus {
+  loggedIn: boolean
+  email?: string
+  orgName?: string
+  subscriptionType?: string
+  authMethod?: string
+  loginInProgress?: boolean
+}
+
 export const useClaudeChatStore = defineStore('claude-chat', () => {
   const messages = ref<ClaudeMessage[]>([])
   const isStreaming = ref(false)
   const includeDocument = ref(false)
   const currentSessionId = ref<string | null>(null)
   const currentDocPath = ref<string | null>(null)
+  const authStatus = ref<AuthStatus | null>(null)
 
   /**
    * Sends a user message to Claude via IPC and begins streaming.
@@ -134,6 +144,30 @@ export const useClaudeChatStore = defineStore('claude-chat', () => {
   }
 
   /**
+   * Requests the backend to check the current Claude authentication status.
+   * The result will arrive asynchronously via the 'auth-status' IPC event.
+   */
+  function checkAuth (): void {
+    ipcRenderer.invoke('claude-provider', {
+      command: 'check-auth',
+      payload: {}
+    })
+      .catch(err => console.error(err))
+  }
+
+  /**
+   * Launches the interactive Claude login flow via the backend.
+   * The result will arrive asynchronously via the 'auth-status' IPC event.
+   */
+  function login (): void {
+    ipcRenderer.invoke('claude-provider', {
+      command: 'login',
+      payload: {}
+    })
+      .catch(err => console.error(err))
+  }
+
+  /**
    * Stops the current generation and sets streaming to false.
    */
   function stopGeneration (): void {
@@ -158,6 +192,8 @@ export const useClaudeChatStore = defineStore('claude-chat', () => {
         sessionId?: string
       }
       setMessages(loadedMessages, sessionId)
+    } else if (command === 'auth-status') {
+      authStatus.value = payload as AuthStatus
     }
   })
 
@@ -167,12 +203,15 @@ export const useClaudeChatStore = defineStore('claude-chat', () => {
     includeDocument,
     currentSessionId,
     currentDocPath,
+    authStatus,
     sendMessage,
     appendChunk,
     finalizeMessage,
     clearMessages,
     loadHistory,
     setMessages,
-    stopGeneration
+    stopGeneration,
+    checkAuth,
+    login
   }
 })

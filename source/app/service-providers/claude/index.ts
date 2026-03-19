@@ -21,12 +21,14 @@ import ProviderContract from '../provider-contract'
 import type LogProvider from '../log'
 import ConversationStore from './conversation-store'
 import type { ClaudeMessage } from './types'
+import { checkAuthStatus, type AuthStatus } from './auth'
 
 export default class ClaudeProvider extends ProviderContract {
   private _process: ChildProcess | undefined
   private _sessionId: string | undefined
   private readonly _store: ConversationStore
   private _currentDocPath: string | undefined
+  private _authStatus: AuthStatus = { loggedIn: false }
 
   constructor (private readonly _logger: LogProvider) {
     super()
@@ -67,17 +69,91 @@ export default class ClaudeProvider extends ProviderContract {
           })
         }
         return conversation?.messages ?? []
+      } else if (command === 'check-auth') {
+        const status = await checkAuthStatus()
+        this._authStatus = status
+        broadcastIpcMessage('claude-chat', 'auth-status', status)
+        return status
+      } else if (command === 'login') {
+        await this._launchLogin()
       }
     })
   }
 
   async boot (): Promise<void> {
     this._logger.verbose('Claude provider booting up ...')
+    // Check auth status on startup and broadcast to renderer
+    try {
+      this._authStatus = await checkAuthStatus()
+      this._logger.info(`[Claude Provider] Auth status: loggedIn=${String(this._authStatus.loggedIn)}, email=${this._authStatus.email ?? 'N/A'}`)
+      broadcastIpcMessage('claude-chat', 'auth-status', this._authStatus)
+    } catch (err: unknown) {
+      this._logger.error('[Claude Provider] Failed to check auth status on boot', err)
+      this._authStatus = { loggedIn: false }
+      broadcastIpcMessage('claude-chat', 'auth-status', this._authStatus)
+    }
   }
 
   async shutdown (): Promise<void> {
     this._logger.verbose('Claude provider shutting down ...')
     this.stop()
+  }
+
+  /**
+   * Launches an interactive login flow by opening a terminal emulator with
+   * `claude auth login`. After the terminal closes, re-checks auth status
+   * and broadcasts the result.
+   */
+  private async _launchLogin (): Promise<void> {
+    this._logger.info('[Claude Provider] Launching Claude auth login in terminal')
+    broadcastIpcMessage('claude-chat', 'auth-status', { ...this._authStatus, loginInProgress: true })
+
+    return await new Promise<void>((resolve) => {
+      let loginProc
+      try {
+        loginProc = spawn('x-terminal-emulator', ['-e', '/home/s/.local/bin/claude', 'auth', 'login'], {
+          stdio: 'ignore',
+          cwd: process.env.HOME ?? '/tmp',
+          env: { ...process.env },
+          detached: true
+        })
+      } catch {
+        // Fallback to gnome-terminal
+        try {
+          loginProc = spawn('gnome-terminal', ['--', '/home/s/.local/bin/claude', 'auth', 'login'], {
+            stdio: 'ignore',
+            cwd: process.env.HOME ?? '/tmp',
+            env: { ...process.env },
+            detached: true
+          })
+        } catch (err: unknown) {
+          const message = err instanceof Error ? err.message : 'Unknown error'
+          this._logger.error(`[Claude Provider] Failed to launch login terminal: ${message}`, err)
+          broadcastIpcMessage('claude-chat', 'auth-status', { ...this._authStatus, loginInProgress: false })
+          resolve()
+          return
+        }
+      }
+
+      loginProc.on('error', (err: Error) => {
+        this._logger.error(`[Claude Provider] Login terminal error: ${err.message}`, err)
+        broadcastIpcMessage('claude-chat', 'auth-status', { ...this._authStatus, loginInProgress: false })
+        resolve()
+      })
+
+      loginProc.on('close', () => {
+        this._logger.info('[Claude Provider] Login terminal closed, re-checking auth status')
+        checkAuthStatus()
+          .then(status => {
+            this._authStatus = status
+            broadcastIpcMessage('claude-chat', 'auth-status', status)
+          })
+          .catch(() => {
+            broadcastIpcMessage('claude-chat', 'auth-status', { loggedIn: false })
+          })
+          .finally(() => { resolve() })
+      })
+    })
   }
 
   /**
@@ -89,6 +165,16 @@ export default class ClaudeProvider extends ProviderContract {
    * @param   {string}  selectionText    Optional selected text
    */
   async sendMessage (userMessage: string, documentContent?: string, selectionText?: string): Promise<void> {
+    // Gate: require authentication before sending messages
+    if (!this._authStatus.loggedIn) {
+      this._logger.warning('[Claude Provider] Cannot send message: not authenticated')
+      broadcastIpcMessage('claude-chat', 'end', {
+        error: 'Not authenticated. Please sign in to Claude first.',
+        sessionId: this._sessionId
+      })
+      return
+    }
+
     // Build the prompt from the message and optional context
     const parts: string[] = [userMessage]
 
