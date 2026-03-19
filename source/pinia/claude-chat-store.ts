@@ -14,7 +14,8 @@
  */
 
 import { defineStore } from 'pinia'
-import { ref } from 'vue'
+import { ref, computed, watch } from 'vue'
+import { useDocumentTreeStore } from '.'
 
 const ipcRenderer = window.ipc
 
@@ -146,6 +147,75 @@ export const useClaudeChatStore = defineStore('claude-chat', () => {
       .catch(err => console.error(err))
   }
 
+  /**
+   * Computed display name for the current document, extracted from its path.
+   * Returns null when no document is associated with the conversation.
+   */
+  const currentDocTitle = computed<string | null>(() => {
+    if (currentDocPath.value == null) {
+      return null
+    }
+
+    const parts = currentDocPath.value.split('/')
+    return parts[parts.length - 1] ?? null
+  })
+
+  /**
+   * Explicitly saves the current conversation history to disk.
+   */
+  function saveCurrentHistory (): void {
+    if (currentDocPath.value == null || messages.value.length === 0) {
+      return
+    }
+
+    ipcRenderer.invoke('claude-provider', {
+      command: 'save-history',
+      payload: {
+        docPath: currentDocPath.value,
+        messages: messages.value,
+        sessionId: currentSessionId.value
+      }
+    })
+      .catch(err => console.error(err))
+  }
+
+  // Watch for active document changes and switch conversations
+  const documentTreeStore = useDocumentTreeStore()
+
+  watch(() => documentTreeStore.lastLeafActiveFile, (newFile, oldFile) => {
+    const newPath = newFile?.path
+    const oldPath = oldFile?.path
+
+    // Nothing to do if the path hasn't actually changed
+    if (newPath === oldPath) {
+      return
+    }
+
+    // Save the current conversation before switching away
+    if (currentDocPath.value != null && messages.value.length > 0) {
+      ipcRenderer.invoke('claude-provider', {
+        command: 'save-history',
+        payload: {
+          docPath: currentDocPath.value,
+          messages: messages.value,
+          sessionId: currentSessionId.value
+        }
+      })
+        .catch(err => console.error(err))
+    }
+
+    // Switch to the new document's conversation
+    if (newPath != null) {
+      currentSessionId.value = null
+      loadHistory(newPath)
+    } else {
+      // No document is active — reset to a blank state
+      currentDocPath.value = null
+      currentSessionId.value = null
+      messages.value = []
+    }
+  })
+
   // Listen to streamed chunks from the backend
   ipcRenderer.on('claude-chat', (event, command: string, payload: any) => {
     if (command === 'chunk') {
@@ -167,12 +237,14 @@ export const useClaudeChatStore = defineStore('claude-chat', () => {
     includeDocument,
     currentSessionId,
     currentDocPath,
+    currentDocTitle,
     sendMessage,
     appendChunk,
     finalizeMessage,
     clearMessages,
     loadHistory,
     setMessages,
+    saveCurrentHistory,
     stopGeneration
   }
 })

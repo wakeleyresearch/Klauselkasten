@@ -3,6 +3,9 @@
     <!-- Header controls -->
     <div class="claude-chat-header">
       <h1>Claude</h1>
+      <div class="claude-chat-doc-title" v-bind:title="docTitleFull">
+        {{ docTitleDisplay }}
+      </div>
       <div class="claude-chat-controls">
         <label class="claude-chat-toggle">
           <input
@@ -104,6 +107,16 @@ const placeholderText = trans('Type a message... (Enter to send, Shift+Enter for
 const messages = computed(() => claudeChatStore.messages)
 const isStreaming = computed(() => claudeChatStore.isStreaming)
 
+const noDocumentLabel = trans('No document open')
+
+const docTitleDisplay = computed(() => {
+  return claudeChatStore.currentDocTitle ?? noDocumentLabel
+})
+
+const docTitleFull = computed(() => {
+  return claudeChatStore.currentDocPath ?? ''
+})
+
 const includeDocument = computed({
   get: () => claudeChatStore.includeDocument,
   set: (value: boolean) => { claudeChatStore.includeDocument = value }
@@ -190,7 +203,17 @@ function clearConversation (): void {
 
     h1 {
       font-size: 16px;
-      margin: 10px 0 5px 0;
+      margin: 10px 0 2px 0;
+    }
+
+    .claude-chat-doc-title {
+      font-size: 11px;
+      color: rgb(120, 120, 120);
+      margin-bottom: 5px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 100%;
     }
 
     .claude-chat-controls {
