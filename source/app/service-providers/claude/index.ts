@@ -55,6 +55,15 @@ export default class ClaudeProvider extends ProviderContract {
           await this._store.clear(this._currentDocPath)
         }
         this._sessionId = undefined
+      } else if (command === 'save-history') {
+        const { docPath, messages, sessionId } = payload as {
+          docPath: string
+          messages: ClaudeMessage[]
+          sessionId?: string | null
+        }
+        if (docPath != null && messages != null) {
+          await this._store.save(docPath, messages, sessionId ?? null)
+        }
       } else if (command === 'load-history') {
         const { docPath } = payload as { docPath: string }
         this._currentDocPath = docPath
@@ -64,6 +73,14 @@ export default class ClaudeProvider extends ProviderContract {
           broadcastIpcMessage('claude-chat', 'history-loaded', {
             messages: conversation.messages,
             sessionId: conversation.sessionId
+          })
+        } else {
+          // No conversation found — broadcast empty history so the renderer
+          // clears any stale messages from the previous document.
+          this._sessionId = undefined
+          broadcastIpcMessage('claude-chat', 'history-loaded', {
+            messages: [],
+            sessionId: undefined
           })
         }
         return conversation?.messages ?? []
