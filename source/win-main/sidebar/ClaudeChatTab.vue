@@ -1,68 +1,108 @@
 <template>
   <div role="tabpanel" class="claude-chat-tab">
-    <!-- Header controls -->
-    <div class="claude-chat-header">
-      <h1>Claude</h1>
-      <div class="claude-chat-controls">
-        <label class="claude-chat-toggle">
-          <input
-            type="checkbox"
-            v-model="includeDocument"
+    <!-- Auth panel: shown when not authenticated -->
+    <template v-if="authStatus == null || !authStatus.loggedIn">
+      <div class="claude-chat-header">
+        <h1>Claude</h1>
+      </div>
+      <div class="claude-chat-auth-panel">
+        <div class="claude-chat-auth-icon">
+          <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
+            <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+          </svg>
+        </div>
+        <h2>{{ signInTitle }}</h2>
+        <p class="claude-chat-auth-desc">{{ signInDesc }}</p>
+        <button
+          class="claude-chat-btn claude-chat-btn-signin"
+          v-bind:disabled="loginInProgress"
+          v-on:click="handleLogin"
+        >
+          <template v-if="loginInProgress">
+            <span class="claude-chat-spinner"></span>
+            {{ signingInLabel }}
+          </template>
+          <template v-else>
+            {{ signInLabel }}
+          </template>
+        </button>
+        <button
+          class="claude-chat-btn claude-chat-btn-retry"
+          v-on:click="handleCheckAuth"
+        >
+          {{ checkStatusLabel }}
+        </button>
+      </div>
+    </template>
+
+    <!-- Chat interface: shown when authenticated -->
+    <template v-else>
+      <!-- Header controls -->
+      <div class="claude-chat-header">
+        <h1>Claude</h1>
+        <p v-if="authStatus.email != null" class="claude-chat-email">{{ authStatus.email }}</p>
+        <div class="claude-chat-controls">
+          <label class="claude-chat-toggle">
+            <input
+              type="checkbox"
+              v-model="includeDocument"
+            >
+            {{ includeDocumentLabel }}
+          </label>
+          <button
+            v-if="isStreaming"
+            class="claude-chat-btn claude-chat-btn-stop"
+            v-on:click="stopStreaming"
           >
-          {{ includeDocumentLabel }}
-        </label>
-        <button
-          v-if="isStreaming"
-          class="claude-chat-btn claude-chat-btn-stop"
-          v-on:click="stopStreaming"
-        >
-          {{ stopLabel }}
-        </button>
-        <button
-          class="claude-chat-btn"
-          v-on:click="clearConversation"
-        >
-          {{ clearLabel }}
-        </button>
+            {{ stopLabel }}
+          </button>
+          <button
+            class="claude-chat-btn"
+            v-on:click="clearConversation"
+          >
+            {{ clearLabel }}
+          </button>
+        </div>
       </div>
-    </div>
 
-    <!-- Message list -->
-    <div
-      ref="messageContainer"
-      class="claude-chat-messages"
-    >
-      <div v-if="messages.length === 0" class="claude-chat-empty">
-        {{ emptyMessage }}
-      </div>
+      <!-- Message list -->
       <div
-        v-for="(msg, idx) in messages"
-        v-bind:key="idx"
-        v-bind:class="['claude-chat-message', 'claude-chat-message-' + msg.role]"
+        ref="messageContainer"
+        class="claude-chat-messages"
       >
-        <div class="claude-chat-message-role">
-          {{ msg.role === 'user' ? userLabel : assistantLabel }}
+        <div v-if="messages.length === 0" class="claude-chat-empty">
+          {{ emptyMessage }}
         </div>
-        <div class="claude-chat-message-content">
-          {{ msg.content }}
+        <div
+          v-for="(msg, idx) in messages"
+          v-bind:key="idx"
+          v-bind:class="['claude-chat-message', 'claude-chat-message-' + msg.role]"
+        >
+          <div class="claude-chat-message-role">
+            {{ msg.role === 'user' ? userLabel : assistantLabel }}
+          </div>
+          <div class="claude-chat-message-content">
+            {{ msg.content }}
+          </div>
+        </div>
+        <div v-if="isStreaming" class="claude-chat-streaming">
+          <span class="claude-chat-dots">...</span>
         </div>
       </div>
-      <div v-if="isStreaming" class="claude-chat-streaming">
-        <span class="claude-chat-dots">...</span>
-      </div>
-    </div>
 
-    <!-- Input area -->
-    <div class="claude-chat-input-area">
-      <textarea
-        ref="inputArea"
-        v-model="inputText"
-        v-bind:placeholder="placeholderText"
-        v-bind:disabled="isStreaming"
-        v-on:keydown="handleKeydown"
-        rows="3"
-      ></textarea>
-    </div>
+      <!-- Input area -->
+      <div class="claude-chat-input-area">
+        <textarea
+          ref="inputArea"
+          v-model="inputText"
+          v-bind:placeholder="placeholderText"
+          v-bind:disabled="isStreaming"
+          v-on:keydown="handleKeydown"
+          rows="3"
+        ></textarea>
+      </div>
+    </template>
   </div>
 </template>
 
@@ -84,7 +124,7 @@
  */
 
 import { trans } from '@common/i18n-renderer'
-import { ref, watch, nextTick, computed } from 'vue'
+import { ref, watch, nextTick, computed, onMounted } from 'vue'
 import { useClaudeChatStore } from 'source/pinia'
 
 const claudeChatStore = useClaudeChatStore()
@@ -100,13 +140,27 @@ const userLabel = trans('User')
 const assistantLabel = trans('Claude')
 const emptyMessage = trans('Ask Claude anything about your writing.')
 const placeholderText = trans('Type a message... (Enter to send, Shift+Enter for newline)')
+const signInTitle = trans('Sign in to Claude')
+const signInDesc = trans('Authenticate with your Claude account to start chatting.')
+const signInLabel = trans('Sign In')
+const signingInLabel = trans('Signing in...')
+const checkStatusLabel = trans('Check status')
 
 const messages = computed(() => claudeChatStore.messages)
 const isStreaming = computed(() => claudeChatStore.isStreaming)
+const authStatus = computed(() => claudeChatStore.authStatus)
+const loginInProgress = computed(() => authStatus.value?.loginInProgress === true)
 
 const includeDocument = computed({
   get: () => claudeChatStore.includeDocument,
   set: (value: boolean) => { claudeChatStore.includeDocument = value }
+})
+
+// Request auth status check on mount in case the boot broadcast was missed
+onMounted(() => {
+  if (authStatus.value == null) {
+    claudeChatStore.checkAuth()
+  }
 })
 
 /**
@@ -173,6 +227,20 @@ function stopStreaming (): void {
 function clearConversation (): void {
   claudeChatStore.clearMessages()
 }
+
+/**
+ * Launches the interactive login flow.
+ */
+function handleLogin (): void {
+  claudeChatStore.login()
+}
+
+/**
+ * Re-checks auth status (useful after external login).
+ */
+function handleCheckAuth (): void {
+  claudeChatStore.checkAuth()
+}
 </script>
 
 <style lang="less">
@@ -191,6 +259,13 @@ function clearConversation (): void {
     h1 {
       font-size: 16px;
       margin: 10px 0 5px 0;
+    }
+
+    .claude-chat-email {
+      font-size: 11px;
+      color: rgb(120, 120, 120);
+      margin: 0 0 4px 0;
+      line-height: 1.2;
     }
 
     .claude-chat-controls {
@@ -318,11 +393,86 @@ function clearConversation (): void {
       }
     }
   }
+
+  .claude-chat-auth-panel {
+    flex-grow: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+    text-align: center;
+    gap: 12px;
+
+    .claude-chat-auth-icon {
+      color: rgb(120, 120, 120);
+    }
+
+    h2 {
+      font-size: 15px;
+      margin: 0;
+    }
+
+    .claude-chat-auth-desc {
+      font-size: 12px;
+      color: rgb(120, 120, 120);
+      margin: 0;
+      line-height: 1.4;
+    }
+
+    .claude-chat-btn-signin {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      font-size: 13px;
+      padding: 6px 20px;
+      border-radius: 4px;
+      cursor: pointer;
+      border: 1px solid var(--system-accent-color, rgb(0, 100, 200));
+      background-color: var(--system-accent-color, rgb(0, 100, 200));
+      color: #fff;
+      font-weight: 500;
+
+      &:hover:not(:disabled) { opacity: 0.9; }
+
+      &:disabled {
+        opacity: 0.7;
+        cursor: wait;
+      }
+    }
+
+    .claude-chat-btn-retry {
+      font-size: 11px;
+      padding: 3px 10px;
+      border-radius: 4px;
+      cursor: pointer;
+      border: 1px solid rgba(0, 0, 0, 0.2);
+      background-color: transparent;
+      color: inherit;
+
+      &:hover { background-color: rgba(0, 0, 0, 0.05); }
+    }
+
+    .claude-chat-spinner {
+      display: inline-block;
+      width: 14px;
+      height: 14px;
+      border: 2px solid rgba(255, 255, 255, 0.3);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: claude-spin 0.8s linear infinite;
+    }
+  }
 }
 
 @keyframes claude-dots-pulse {
   0%, 100% { opacity: 0.3; }
   50% { opacity: 1; }
+}
+
+@keyframes claude-spin {
+  to { transform: rotate(360deg); }
 }
 
 body.dark {
@@ -358,6 +508,14 @@ body.dark {
 
     .claude-chat-input-area textarea {
       border-color: rgba(255, 255, 255, 0.2);
+    }
+
+    .claude-chat-auth-panel {
+      .claude-chat-btn-retry {
+        border-color: rgba(255, 255, 255, 0.2);
+
+        &:hover { background-color: rgba(255, 255, 255, 0.1); }
+      }
     }
   }
 }
