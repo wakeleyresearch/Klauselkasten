@@ -34,6 +34,7 @@ import TargetProvider from '@providers/targets'
 import TrayProvider from '@providers/tray'
 import UpdateProvider from '@providers/updates'
 import WindowProvider from '@providers/windows'
+import ClaudeProvider from '@providers/claude'
 import { dialog } from 'electron'
 import { closeSplashScreen, showSplashScreen, updateSplashScreen } from './util/splash-screen'
 import path from 'path'
@@ -89,6 +90,7 @@ export class AppServiceContainer {
   private readonly _updateProvider: UpdateProvider
   private readonly _windowProvider: WindowProvider
   private readonly _fsal: FSAL
+  private readonly _claudeProvider: ClaudeProvider
   private readonly _documentManager: DocumentManager
   private _isBooted: boolean
 
@@ -107,6 +109,7 @@ export class AppServiceContainer {
     this._assetsProvider = new AssetsProvider(this._logProvider)
     this._cssProvider = new CssProvider(this._logProvider)
     this._statsProvider = new StatsProvider(this._logProvider)
+    this._claudeProvider = new ClaudeProvider(this._logProvider)
 
     this._appearanceProvider = new AppearanceProvider(this._logProvider, this._configProvider)
     this._dictionaryProvider = new DictionaryProvider(this._logProvider, this._configProvider)
@@ -189,6 +192,7 @@ export class AppServiceContainer {
     await this._informativeBoot(this._documentManager, 'DocumentManager')
     await this._informativeBoot(this._menuProvider, 'MenuProvider')
     await this._informativeBoot(this._updateProvider, 'UpdateProvider')
+    await this._informativeBoot(this._claudeProvider, 'ClaudeProvider')
 
     this._menuProvider.set() // TODO
 
@@ -283,6 +287,11 @@ export class AppServiceContainer {
   public get tray (): TrayProvider { return this._trayProvider }
 
   /**
+   * Returns the Claude provider
+   */
+  public get claude (): ClaudeProvider { return this._claudeProvider }
+
+  /**
    * Returns the update provider
    */
   public get updates (): UpdateProvider { return this._updateProvider }
@@ -311,6 +320,7 @@ export class AppServiceContainer {
    * Prepares quitting the app by shutting down the service providers
    */
   async shutdown (): Promise<void> {
+    await this._safeShutdown(this._claudeProvider, 'ClaudeProvider')
     await this._safeShutdown(this._commandProvider, 'CommandProvider')
     await this._safeShutdown(this._documentManager, 'DocumentManager')
     await this._safeShutdown(this._fsal, 'FSAL')
