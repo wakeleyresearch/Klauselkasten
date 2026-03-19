@@ -44,7 +44,7 @@ export default class ClaudeProvider extends ProviderContract {
           selection?: string
           sessionId?: string
         }
-        if (sessionId !== undefined) {
+        if (sessionId != null) {
           this._sessionId = sessionId
         }
         await this.sendMessage(text, docContent, selection)
@@ -92,11 +92,11 @@ export default class ClaudeProvider extends ProviderContract {
     // Build the prompt from the message and optional context
     const parts: string[] = [userMessage]
 
-    if (documentContent !== undefined && documentContent.length > 0) {
+    if (documentContent != null && documentContent.length > 0) {
       parts.push(`\nCurrent document:\n${documentContent}`)
     }
 
-    if (selectionText !== undefined && selectionText.length > 0) {
+    if (selectionText != null && selectionText.length > 0) {
       parts.push(`\nSelected text:\n${selectionText}`)
     }
 
@@ -107,10 +107,10 @@ export default class ClaudeProvider extends ProviderContract {
       '-p', prompt,
       '--output-format', 'stream-json',
       '--verbose',
-      '--no-session-persistence'
+      '--include-partial-messages'
     ]
 
-    if (this._sessionId !== undefined) {
+    if (this._sessionId != null) {
       args.push('--resume', this._sessionId)
     }
 
@@ -119,11 +119,12 @@ export default class ClaudeProvider extends ProviderContract {
       'You are assisting a user in Zettlr, a markdown editor for academic writing and Zettelkasten note-taking.'
     )
 
-    this._logger.info('[Claude Provider] Spawning Claude CLI subprocess')
+    this._logger.info(`[Claude Provider] Spawning Claude CLI subprocess with args: ${JSON.stringify(args.map(a => a.length > 50 ? a.substring(0, 50) + '...' : a))}`)
 
     try {
-      this._process = spawn('claude', args, {
-        stdio: ['pipe', 'pipe', 'pipe'],
+      this._process = spawn('/home/s/.local/bin/claude', args, {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        cwd: process.env.HOME ?? '/tmp',
         env: { ...process.env }
       })
     } catch (err: unknown) {
@@ -150,43 +151,57 @@ export default class ClaudeProvider extends ProviderContract {
         try {
           const parsed = JSON.parse(line)
 
-          // Capture session ID from the stream
+          // Capture session ID from any event that carries it
           if (parsed.session_id !== undefined && typeof parsed.session_id === 'string') {
             this._sessionId = parsed.session_id
           }
 
-          // Extract text deltas from content block delta events
-          if (
-            parsed.type === 'content_block_delta' &&
-            parsed.delta?.type === 'text_delta' &&
-            typeof parsed.delta.text === 'string'
-          ) {
-            assistantContent += parsed.delta.text
-            broadcastIpcMessage('claude-chat', 'chunk', parsed.delta.text)
+          // Handle stream_event wrapper (Claude Code CLI format)
+          if (parsed.type === 'stream_event' && parsed.event !== undefined) {
+            const event = parsed.event
+
+            // Extract text deltas from content block delta events
+            if (
+              event.type === 'content_block_delta' &&
+              event.delta?.type === 'text_delta' &&
+              typeof event.delta.text === 'string'
+            ) {
+              assistantContent += event.delta.text
+              broadcastIpcMessage('claude-chat', 'chunk', event.delta.text)
+            }
+
+            // Detect end of message
+            if (event.type === 'message_stop') {
+              broadcastIpcMessage('claude-chat', 'end', {
+                error: null,
+                sessionId: this._sessionId
+              })
+
+              // Persist conversation to disk
+              if (this._currentDocPath !== undefined) {
+                const docPath = this._currentDocPath
+                const sessionId = this._sessionId ?? null
+                const content = assistantContent
+                this._store.load(docPath)
+                  .then(conversation => {
+                    const msgs = conversation?.messages ?? []
+                    msgs.push(
+                      { role: 'user', content: userMessage, timestamp: Date.now() },
+                      { role: 'assistant', content, timestamp: Date.now() }
+                    )
+                    return this._store.save(docPath, msgs, sessionId)
+                  })
+                  .catch(err => this._logger.error('[Claude Provider] Failed to save conversation', err))
+              }
+            }
           }
 
-          // Detect end of message
-          if (parsed.type === 'message_stop') {
-            broadcastIpcMessage('claude-chat', 'end', {
-              error: null,
-              sessionId: this._sessionId
-            })
-
-            // Persist conversation to disk
-            if (this._currentDocPath !== undefined) {
-              const docPath = this._currentDocPath
-              const sessionId = this._sessionId ?? null
-              const content = assistantContent
-              this._store.load(docPath)
-                .then(conversation => {
-                  const msgs = conversation?.messages ?? []
-                  msgs.push(
-                    { role: 'user', content: userMessage, timestamp: Date.now() },
-                    { role: 'assistant', content, timestamp: Date.now() }
-                  )
-                  return this._store.save(docPath, msgs, sessionId)
-                })
-                .catch(err => this._logger.error('[Claude Provider] Failed to save conversation', err))
+          // Handle result event (final response)
+          if (parsed.type === 'result' && parsed.result !== undefined) {
+            // If we didn't get streaming chunks, use the final result
+            if (assistantContent.length === 0 && typeof parsed.result === 'string') {
+              assistantContent = parsed.result
+              broadcastIpcMessage('claude-chat', 'chunk', parsed.result)
             }
           }
         } catch (err: unknown) {
@@ -197,8 +212,10 @@ export default class ClaudeProvider extends ProviderContract {
     })
 
     this._process.stderr?.on('data', (chunk: Buffer) => {
-      const text = chunk.toString('utf-8')
-      this._logger.verbose(`[Claude Provider] stderr: ${text.substring(0, 500)}`)
+      const text = chunk.toString('utf-8').trim()
+      if (text.length > 0) {
+        this._logger.info(`[Claude Provider] stderr: ${text.substring(0, 500)}`)
+      }
     })
 
     this._process.on('error', (err: Error) => {
@@ -215,11 +232,12 @@ export default class ClaudeProvider extends ProviderContract {
         try {
           const parsed = JSON.parse(lineBuffer)
           if (
-            parsed.type === 'content_block_delta' &&
-            parsed.delta?.type === 'text_delta' &&
-            typeof parsed.delta.text === 'string'
+            parsed.type === 'stream_event' &&
+            parsed.event?.type === 'content_block_delta' &&
+            parsed.event.delta?.type === 'text_delta' &&
+            typeof parsed.event.delta.text === 'string'
           ) {
-            broadcastIpcMessage('claude-chat', 'chunk', parsed.delta.text)
+            broadcastIpcMessage('claude-chat', 'chunk', parsed.event.delta.text)
           }
         } catch {
           // Ignore trailing non-JSON data
