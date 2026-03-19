@@ -55,6 +55,11 @@ export default class ClaudeProvider extends ProviderContract {
           await this._store.clear(this._currentDocPath)
         }
         this._sessionId = undefined
+      } else if (command === 'insert-text') {
+        const { text } = payload as { text: string }
+        if (typeof text === 'string' && text.length > 0) {
+          broadcastIpcMessage('claude-chat', 'insert-text', { text })
+        }
       } else if (command === 'load-history') {
         const { docPath } = payload as { docPath: string }
         this._currentDocPath = docPath

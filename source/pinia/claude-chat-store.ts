@@ -146,6 +146,20 @@ export const useClaudeChatStore = defineStore('claude-chat', () => {
       .catch(err => console.error(err))
   }
 
+  /**
+   * Inserts the given text into the active document at the cursor position
+   * by routing through the Claude provider IPC channel.
+   *
+   * @param   {string}  text  The text to insert into the editor
+   */
+  function insertIntoDocument (text: string): void {
+    ipcRenderer.invoke('claude-provider', {
+      command: 'insert-text',
+      payload: { text }
+    })
+      .catch(err => console.error(err))
+  }
+
   // Listen to streamed chunks from the backend
   ipcRenderer.on('claude-chat', (event, command: string, payload: any) => {
     if (command === 'chunk') {
@@ -173,6 +187,7 @@ export const useClaudeChatStore = defineStore('claude-chat', () => {
     clearMessages,
     loadHistory,
     setMessages,
-    stopGeneration
+    stopGeneration,
+    insertIntoDocument
   }
 })

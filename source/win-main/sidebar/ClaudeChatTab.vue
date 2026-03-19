@@ -40,8 +40,29 @@
         v-bind:key="idx"
         v-bind:class="['claude-chat-message', 'claude-chat-message-' + msg.role]"
       >
-        <div class="claude-chat-message-role">
-          {{ msg.role === 'user' ? userLabel : assistantLabel }}
+        <div class="claude-chat-message-header">
+          <div class="claude-chat-message-role">
+            {{ msg.role === 'user' ? userLabel : assistantLabel }}
+          </div>
+          <div
+            v-if="msg.role === 'assistant'"
+            class="claude-chat-message-actions"
+          >
+            <button
+              class="claude-chat-action-btn"
+              v-bind:title="insertLabel"
+              v-on:click="insertIntoDocument(msg.content)"
+            >
+              {{ insertLabel }}
+            </button>
+            <button
+              class="claude-chat-action-btn"
+              v-bind:title="copyLabel"
+              v-on:click="copyToClipboard(msg.content)"
+            >
+              {{ copyLabel }}
+            </button>
+          </div>
         </div>
         <div class="claude-chat-message-content">
           {{ msg.content }}
@@ -98,6 +119,8 @@ const clearLabel = trans('Clear')
 const stopLabel = trans('Stop')
 const userLabel = trans('User')
 const assistantLabel = trans('Claude')
+const insertLabel = trans('Insert')
+const copyLabel = trans('Copy')
 const emptyMessage = trans('Ask Claude anything about your writing.')
 const placeholderText = trans('Type a message... (Enter to send, Shift+Enter for newline)')
 
@@ -172,6 +195,24 @@ function stopStreaming (): void {
  */
 function clearConversation (): void {
   claudeChatStore.clearMessages()
+}
+
+/**
+ * Inserts the given text into the active document at the cursor position.
+ *
+ * @param   {string}  text  The text to insert
+ */
+function insertIntoDocument (text: string): void {
+  claudeChatStore.insertIntoDocument(text)
+}
+
+/**
+ * Copies the given text to the system clipboard.
+ *
+ * @param   {string}  text  The text to copy
+ */
+function copyToClipboard (text: string): void {
+  navigator.clipboard.writeText(text).catch(err => console.error(err))
 }
 </script>
 
@@ -250,12 +291,45 @@ function clearConversation (): void {
       font-size: 13px;
       line-height: 1.4;
 
+      .claude-chat-message-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 2px;
+      }
+
       .claude-chat-message-role {
         font-size: 11px;
         font-weight: bold;
-        margin-bottom: 2px;
         text-transform: uppercase;
         letter-spacing: 0.5px;
+      }
+
+      .claude-chat-message-actions {
+        display: flex;
+        gap: 4px;
+        opacity: 0;
+        transition: opacity 0.15s ease;
+      }
+
+      &:hover .claude-chat-message-actions {
+        opacity: 1;
+      }
+
+      .claude-chat-action-btn {
+        font-size: 10px;
+        padding: 1px 6px;
+        border-radius: 3px;
+        cursor: pointer;
+        border: 1px solid rgba(0, 0, 0, 0.15);
+        background-color: transparent;
+        color: inherit;
+        line-height: 1.4;
+
+        &:hover {
+          background-color: rgba(0, 0, 0, 0.08);
+          border-color: rgba(0, 0, 0, 0.3);
+        }
       }
 
       .claude-chat-message-content {
@@ -353,6 +427,15 @@ body.dark {
 
       .claude-chat-message-assistant {
         background-color: rgba(255, 255, 255, 0.06);
+      }
+    }
+
+    .claude-chat-message .claude-chat-action-btn {
+      border-color: rgba(255, 255, 255, 0.2);
+
+      &:hover {
+        background-color: rgba(255, 255, 255, 0.1);
+        border-color: rgba(255, 255, 255, 0.35);
       }
     }
 
