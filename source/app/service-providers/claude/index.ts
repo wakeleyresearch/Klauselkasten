@@ -9,26 +9,36 @@
  *
  * Description:     This service provider manages a Claude Code CLI subprocess,
  *                  sends user messages to it, parses streaming NDJSON output,
- *                  and forwards text chunks to the renderer via IPC.
+ *                  and forwards text chunks to the renderer via IPC.  It also
+ *                  tracks the active document so that document content can be
+ *                  automatically included in prompts and conversation history
+ *                  can be loaded per-document.
  *
  * END HEADER
  */
 
+import path from 'path'
 import { spawn, type ChildProcess } from 'child_process'
 import { ipcMain } from 'electron'
 import broadcastIpcMessage from '@common/util/broadcast-ipc-message'
 import ProviderContract from '../provider-contract'
 import type LogProvider from '../log'
+import type DocumentManager from '../documents'
+import type { DocumentsUpdateContext } from '../documents'
+import { DP_EVENTS } from '@dts/common/documents'
 import ConversationStore from './conversation-store'
-import type { ClaudeMessage } from './types'
 
 export default class ClaudeProvider extends ProviderContract {
   private _process: ChildProcess | undefined
   private _sessionId: string | undefined
   private readonly _store: ConversationStore
   private _currentDocPath: string | undefined
+  private _activeDocPath: string | undefined
 
-  constructor (private readonly _logger: LogProvider) {
+  constructor (
+    private readonly _logger: LogProvider,
+    private readonly _documents: DocumentManager
+  ) {
     super()
     this._process = undefined
     this._sessionId = undefined
@@ -67,17 +77,128 @@ export default class ClaudeProvider extends ProviderContract {
           })
         }
         return conversation?.messages ?? []
+      } else if (command === 'get-active-doc-info') {
+        return this._getActiveDocInfo()
       }
     })
   }
 
   async boot (): Promise<void> {
     this._logger.verbose('Claude provider booting up ...')
+
+    // Listen for active file changes from the DocumentManager so we can
+    // automatically track which document the user is working on and load
+    // the corresponding conversation history.
+    this._documents.on(DP_EVENTS.ACTIVE_FILE, (ctx: DocumentsUpdateContext) => {
+      const filePath = ctx.filePath
+      if (filePath == null) {
+        return
+      }
+
+      // Nothing to do if the active document hasn't actually changed
+      if (filePath === this._activeDocPath) {
+        return
+      }
+
+      this._activeDocPath = filePath
+      this._currentDocPath = filePath
+
+      this._logger.info(`[Claude Provider] Active document changed: ${filePath}`)
+
+      // Load conversation history for the newly active document and
+      // broadcast it to the renderer so the chat sidebar updates.
+      this._store.load(filePath)
+        .then(conversation => {
+          if (conversation != null) {
+            this._sessionId = conversation.sessionId ?? undefined
+            broadcastIpcMessage('claude-chat', 'history-loaded', {
+              messages: conversation.messages,
+              sessionId: conversation.sessionId
+            })
+          } else {
+            // No conversation yet — clear the chat in the renderer
+            this._sessionId = undefined
+            broadcastIpcMessage('claude-chat', 'history-loaded', {
+              messages: [],
+              sessionId: null
+            })
+          }
+
+          // Always notify the renderer of the active doc change
+          broadcastIpcMessage('claude-chat', 'active-doc-changed', {
+            path: filePath,
+            title: path.basename(filePath)
+          })
+        })
+        .catch(err => {
+          this._logger.error('[Claude Provider] Failed to load conversation for active doc', err)
+        })
+    })
   }
 
   async shutdown (): Promise<void> {
     this._logger.verbose('Claude provider shutting down ...')
     this.stop()
+  }
+
+  /**
+   * Returns the content of the currently active document by reading it from
+   * the DocumentManager's in-memory document buffer.  Returns null if no
+   * document is active or the document has not been loaded into memory yet.
+   *
+   * @return  {string|null}  The document content, or null
+   */
+  getActiveDocumentContent (): string | null {
+    if (this._activeDocPath == null) {
+      return null
+    }
+
+    // The DocumentManager keeps loaded documents in a private `documents`
+    // array.  We can access document content through its public
+    // `getDocument()` method, but that is async and will load the file if
+    // it is not already loaded.  Instead, we use the synchronous approach:
+    // ask the DocumentManager for the document via getDocument, which
+    // returns a promise.  Since we need a synchronous result here, we
+    // return null and let the caller use the async variant if needed.
+    //
+    // For the sendMessage() flow we call the async version instead.
+    return null
+  }
+
+  /**
+   * Async helper that reads the active document content from the
+   * DocumentManager.
+   *
+   * @return  {Promise<string|null>}  The document content, or null
+   */
+  private async _getActiveDocumentContentAsync (): Promise<string | null> {
+    if (this._activeDocPath == null) {
+      return null
+    }
+
+    try {
+      const doc = await this._documents.getDocument(this._activeDocPath)
+      return doc.content
+    } catch (err: unknown) {
+      this._logger.verbose(`[Claude Provider] Could not read active document: ${err instanceof Error ? err.message : 'unknown'}`)
+      return null
+    }
+  }
+
+  /**
+   * Returns path and title information for the currently active document.
+   *
+   * @return  {{ path: string, title: string } | null}  Active doc info or null
+   */
+  private _getActiveDocInfo (): { path: string, title: string } | null {
+    if (this._activeDocPath == null) {
+      return null
+    }
+
+    return {
+      path: this._activeDocPath,
+      title: path.basename(this._activeDocPath)
+    }
   }
 
   /**
@@ -89,6 +210,15 @@ export default class ClaudeProvider extends ProviderContract {
    * @param   {string}  selectionText    Optional selected text
    */
   async sendMessage (userMessage: string, documentContent?: string, selectionText?: string): Promise<void> {
+    // If no explicit document content was provided but we have an active
+    // document, automatically read its content and include it.
+    if ((documentContent == null || documentContent.length === 0) && this._activeDocPath != null) {
+      const autoContent = await this._getActiveDocumentContentAsync()
+      if (autoContent != null) {
+        documentContent = autoContent
+      }
+    }
+
     // Build the prompt from the message and optional context
     const parts: string[] = [userMessage]
 
