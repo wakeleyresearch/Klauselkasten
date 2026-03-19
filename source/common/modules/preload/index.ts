@@ -91,31 +91,6 @@ contextBridge.exposeInMainWorld('process', {
   argv: process.argv
 })
 
-// Expose Claude chat IPC channels
-contextBridge.exposeInMainWorld('claude', {
-  send: (message: string, docContent?: string, selection?: string) => {
-    ipcRenderer.send('claude:send-message', message, docContent, selection)
-  },
-  onChunk: (callback: (event: undefined, chunk: string) => void) => {
-    const cb = (_event: any, chunk: string): void => { callback(undefined, chunk) }
-    ipcRenderer.on('claude:stream-chunk', cb)
-    return () => ipcRenderer.off('claude:stream-chunk', cb)
-  },
-  onEnd: (callback: (event: undefined) => void) => {
-    const cb = (_event: any): void => { callback(undefined) }
-    ipcRenderer.on('claude:stream-end', cb)
-    return () => ipcRenderer.off('claude:stream-end', cb)
-  },
-  stop: () => { ipcRenderer.send('claude:stop') },
-  clear: (docPath: string) => { ipcRenderer.send('claude:clear', docPath) },
-  loadHistory: (docPath: string) => { ipcRenderer.send('claude:load-history', docPath) },
-  onHistoryLoaded: (callback: (event: undefined, history: any) => void) => {
-    const cb = (_event: any, history: any): void => { callback(undefined, history) }
-    ipcRenderer.on('claude:history-loaded', cb)
-    return () => ipcRenderer.off('claude:history-loaded', cb)
-  }
-})
-
 // Allow renderers to retrieve the absolute file path for any file object that
 // points to a file on disk
 contextBridge.exposeInMainWorld('getPathForFile', function (file: File): string|undefined {

@@ -19,26 +19,7 @@ import path from 'path'
 import { promises as fs } from 'fs'
 import { createHash } from 'crypto'
 import { app } from 'electron'
-
-/**
- * Represents a single message in a Claude chat conversation.
- */
-export interface ClaudeMessage {
-  role: 'user' | 'assistant'
-  content: string
-  timestamp: string
-}
-
-/**
- * The on-disk schema for a persisted conversation file.
- */
-export interface ClaudeConversationFile {
-  documentPath: string
-  documentTitle: string
-  sessionId: string | null
-  messages: ClaudeMessage[]
-  lastAccessed: string
-}
+import type { ClaudeMessage, ClaudeConversationFile } from './types'
 
 /**
  * ConversationStore manages the persistence of Claude chat conversations on a
@@ -129,7 +110,7 @@ export default class ConversationStore {
       documentTitle: path.basename(docPath),
       sessionId,
       messages,
-      lastAccessed: new Date().toISOString()
+      lastAccessed: Date.now()
     }
 
     const filePath = this._filePath(docPath)

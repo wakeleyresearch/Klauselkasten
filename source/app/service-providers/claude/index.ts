@@ -19,40 +19,14 @@ import { ipcMain } from 'electron'
 import broadcastIpcMessage from '@common/util/broadcast-ipc-message'
 import ProviderContract from '../provider-contract'
 import type LogProvider from '../log'
-
-/**
- * Represents a single message in the conversation history.
- */
-export interface ConversationMessage {
-  role: 'user' | 'assistant'
-  content: string
-  timestamp: number
-}
-
-/**
- * The conversation store keeps track of the chat history for the current
- * session. It is kept in-memory only and not persisted to disk.
- */
-class ConversationStore {
-  private _messages: ConversationMessage[] = []
-
-  addMessage (role: 'user' | 'assistant', content: string): void {
-    this._messages.push({ role, content, timestamp: Date.now() })
-  }
-
-  getMessages (): ConversationMessage[] {
-    return structuredClone(this._messages)
-  }
-
-  clear (): void {
-    this._messages = []
-  }
-}
+import ConversationStore from './conversation-store'
+import type { ClaudeMessage } from './types'
 
 export default class ClaudeProvider extends ProviderContract {
   private _process: ChildProcess | undefined
   private _sessionId: string | undefined
   private readonly _store: ConversationStore
+  private _currentDocPath: string | undefined
 
   constructor (private readonly _logger: LogProvider) {
     super()
@@ -64,19 +38,35 @@ export default class ClaudeProvider extends ProviderContract {
       const { command, payload } = message
 
       if (command === 'send-message') {
-        const { text, documentContent, selectionText } = payload as {
-          text: string
-          documentContent?: string
-          selectionText?: string
+        const { message: text, docContent, selection, sessionId } = payload as {
+          message: string
+          docContent?: string
+          selection?: string
+          sessionId?: string
         }
-        await this.sendMessage(text, documentContent, selectionText)
+        if (sessionId !== undefined) {
+          this._sessionId = sessionId
+        }
+        await this.sendMessage(text, docContent, selection)
       } else if (command === 'stop') {
         this.stop()
       } else if (command === 'clear') {
-        this._store.clear()
+        if (this._currentDocPath !== undefined) {
+          await this._store.clear(this._currentDocPath)
+        }
         this._sessionId = undefined
       } else if (command === 'load-history') {
-        return this._store.getMessages()
+        const { docPath } = payload as { docPath: string }
+        this._currentDocPath = docPath
+        const conversation = await this._store.load(docPath)
+        if (conversation !== null) {
+          this._sessionId = conversation.sessionId ?? undefined
+          broadcastIpcMessage('claude-chat', 'history-loaded', {
+            messages: conversation.messages,
+            sessionId: conversation.sessionId
+          })
+        }
+        return conversation?.messages ?? []
       }
     })
   }
@@ -112,9 +102,6 @@ export default class ClaudeProvider extends ProviderContract {
 
     const prompt = parts.join('\n')
 
-    // Store the user message
-    this._store.addMessage('user', userMessage)
-
     // Build the CLI arguments
     const args: string[] = [
       '-p', prompt,
@@ -142,7 +129,7 @@ export default class ClaudeProvider extends ProviderContract {
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Unknown error'
       this._logger.error(`[Claude Provider] Failed to spawn Claude CLI: ${message}`, err)
-      broadcastIpcMessage('claude-provider', 'stream-end', { error: message })
+      broadcastIpcMessage('claude-chat', 'end', { error: message, sessionId: this._sessionId })
       return
     }
 
@@ -175,13 +162,32 @@ export default class ClaudeProvider extends ProviderContract {
             typeof parsed.delta.text === 'string'
           ) {
             assistantContent += parsed.delta.text
-            broadcastIpcMessage('claude-provider', 'stream-chunk', parsed.delta.text)
+            broadcastIpcMessage('claude-chat', 'chunk', parsed.delta.text)
           }
 
           // Detect end of message
           if (parsed.type === 'message_stop') {
-            this._store.addMessage('assistant', assistantContent)
-            broadcastIpcMessage('claude-provider', 'stream-end', { error: null })
+            broadcastIpcMessage('claude-chat', 'end', {
+              error: null,
+              sessionId: this._sessionId
+            })
+
+            // Persist conversation to disk
+            if (this._currentDocPath !== undefined) {
+              const docPath = this._currentDocPath
+              const sessionId = this._sessionId ?? null
+              const content = assistantContent
+              this._store.load(docPath)
+                .then(conversation => {
+                  const msgs = conversation?.messages ?? []
+                  msgs.push(
+                    { role: 'user', content: userMessage, timestamp: Date.now() },
+                    { role: 'assistant', content, timestamp: Date.now() }
+                  )
+                  return this._store.save(docPath, msgs, sessionId)
+                })
+                .catch(err => this._logger.error('[Claude Provider] Failed to save conversation', err))
+            }
           }
         } catch (err: unknown) {
           // Skip lines that are not valid JSON
@@ -197,24 +203,12 @@ export default class ClaudeProvider extends ProviderContract {
 
     this._process.on('error', (err: Error) => {
       this._logger.error(`[Claude Provider] Process error: ${err.message}`, err)
-      broadcastIpcMessage('claude-provider', 'stream-end', { error: err.message })
+      broadcastIpcMessage('claude-chat', 'end', { error: err.message })
       this._process = undefined
     })
 
     this._process.on('close', (code: number | null) => {
       this._logger.info(`[Claude Provider] Process exited with code ${String(code)}`)
-
-      // If the process closes without having sent a message_stop event,
-      // we still need to finalize the assistant message and notify the renderer
-      if (assistantContent.length > 0) {
-        // The message_stop handler may have already stored the message;
-        // only add it if the store doesn't already end with this content
-        const messages = this._store.getMessages()
-        const lastMsg = messages[messages.length - 1]
-        if (lastMsg === undefined || lastMsg.role !== 'assistant' || lastMsg.content !== assistantContent) {
-          this._store.addMessage('assistant', assistantContent)
-        }
-      }
 
       // Process any remaining data in the line buffer
       if (lineBuffer.trim().length > 0) {
@@ -225,14 +219,17 @@ export default class ClaudeProvider extends ProviderContract {
             parsed.delta?.type === 'text_delta' &&
             typeof parsed.delta.text === 'string'
           ) {
-            broadcastIpcMessage('claude-provider', 'stream-chunk', parsed.delta.text)
+            broadcastIpcMessage('claude-chat', 'chunk', parsed.delta.text)
           }
         } catch {
           // Ignore trailing non-JSON data
         }
       }
 
-      broadcastIpcMessage('claude-provider', 'stream-end', { error: code !== 0 ? `Process exited with code ${String(code)}` : null })
+      broadcastIpcMessage('claude-chat', 'end', {
+        error: code !== 0 ? `Process exited with code ${String(code)}` : null,
+        sessionId: this._sessionId
+      })
       this._process = undefined
     })
   }

@@ -179,24 +179,4 @@ declare interface Window {
    * @return  {string|undefined}        The absolute path, or undefined.
    */
   getPathForFile: (file: File) => string|undefined
-  /**
-   * The Claude chat API provides methods for communicating with the Claude
-   * chat sidebar via IPC.
-   */
-  claude: {
-    /** Sends a chat message to main, optionally with document context */
-    send: (message: string, docContent?: string, selection?: string) => void
-    /** Listens for streamed response chunks from main */
-    onChunk: (callback: (event: undefined, chunk: string) => void) => () => void
-    /** Listens for the end of a streamed response */
-    onEnd: (callback: (event: undefined) => void) => () => void
-    /** Stops the current Claude response stream */
-    stop: () => void
-    /** Clears chat history for a document */
-    clear: (docPath: string) => void
-    /** Requests chat history for a document from main */
-    loadHistory: (docPath: string) => void
-    /** Listens for loaded chat history from main */
-    onHistoryLoaded: (callback: (event: undefined, history: any) => void) => () => void
-  }
 }

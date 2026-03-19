@@ -164,7 +164,7 @@ function sendMessage (): void {
  * Stops the current streaming response.
  */
 function stopStreaming (): void {
-  claudeChatStore.stopStreaming()
+  claudeChatStore.stopGeneration()
 }
 
 /**

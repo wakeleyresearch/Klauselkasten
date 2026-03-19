@@ -99,7 +99,7 @@ export const useClaudeChatStore = defineStore('claude-chat', () => {
     currentSessionId.value = null
 
     ipcRenderer.invoke('claude-provider', {
-      command: 'clear-history',
+      command: 'clear',
       payload: { docPath: currentDocPath.value }
     })
       .catch(err => console.error(err))
@@ -140,7 +140,7 @@ export const useClaudeChatStore = defineStore('claude-chat', () => {
     isStreaming.value = false
 
     ipcRenderer.invoke('claude-provider', {
-      command: 'stop-generation',
+      command: 'stop',
       payload: { sessionId: currentSessionId.value }
     })
       .catch(err => console.error(err))
