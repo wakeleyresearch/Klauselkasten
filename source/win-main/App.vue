@@ -732,6 +732,14 @@ onMounted(() => {
       isUpdateAvailable.value = updateState.updateAvailable
     }
   })
+
+  // Listen for Claude insert-text commands
+  ipcRenderer.on('claude-chat', (event, command: string, payload: any) => {
+    if (command === 'insert-text' && payload != null && typeof payload.text === 'string') {
+      editorCommands.value.data = payload.text as string
+      editorCommands.value.replaceSelection = !editorCommands.value.replaceSelection
+    }
+  })
 })
 
 function fileManagerSplitComponentResized (sizes: [number, number]): void {
